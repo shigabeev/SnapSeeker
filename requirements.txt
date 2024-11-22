@@ -1,0 +1,10 @@
+gradio
+boto3
+requests
+python-dotenv
+pexels-api
+aiohttp
+aiofiles
+Pillow
+pandas
+joblib 
