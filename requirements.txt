@@ -7,4 +7,5 @@ aiohttp
 aiofiles
 Pillow
 pandas
-joblib 
+joblib
+git@github.com:shigabeev/DataProcessingFramework.git
