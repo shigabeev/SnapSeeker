@@ -116,7 +116,7 @@ def parse_pages(pages):
     return pages_start, pages_end
 
 def prepare_search_queries(search_queries, pages_start, pages_end):
-    return [(page, query) for page in range(pages_start, pages_end) for query in search_queries]
+    return [(query, page) for page in range(pages_start, pages_end) for query in search_queries]
 
 def create_directories(save_path):
     directories = {
@@ -150,19 +150,20 @@ def apply_filters(csv_path, filters):
 
 class ImageDownloader:
 
-    def __init__(self, source_type, directories, min_resolution=1024):
-        self.source_type = source_type
+    def __init__(self, source, directories, min_resolution=1024):
+        self.source = source
         self.session = requests.session()
         self.directories = directories
         self.min_resolution = min_resolution
 
     def search_by_query(self, search_query, page):
-        if self.source_type == "pexels":
+        if self.source == "pexels":
             pexels_api.search(search_query, page=page, results_per_page=80)
             photos = pexels_api.get_entries()
             photos = [photo.original for photo in photos]
             return photos
-        elif self.source_type == "Google search":
+        elif self.source == "Google search":
+            print(f"Searching for {search_query} on page {page}")
             headers = {
                 'x-rapidapi-key': GOOGLE_SEARCH_API_KEY,
                 'x-rapidapi-host': GOOGLE_SEARCH_API_HOST
@@ -184,13 +185,13 @@ class ImageDownloader:
             photos = [img['thumbnail_url'] for img in data['data']]
             return photos
         else:
-            raise ValueError(f"Unsupported source type: {self.source_type}")
+            raise ValueError(f"Unsupported source type: {self.source}")
 
     def _get_image_path(self, url, query):
         path = urlparse(url).path
         ext = os.path.splitext(path)[-1].lstrip('.').replace('/', '_')
         basename = f"{query}_{os.urandom(8).hex()}.{ext}"
-        return os.path.join(self.directories["unprocessed"], basename)
+        return os.path.join(self.directories["unprocessed"], query, basename)
 
     def _get_rejected_path(self, image_path):
         basename = os.path.basename(image_path)
@@ -230,31 +231,38 @@ class ImageDownloader:
         return image_path
 
     def download_batch(self, urls, folder_name):
+        os.makedirs(os.path.join(self.directories["unprocessed"], folder_name), exist_ok=True)
         image_paths = Parallel(n_jobs=1)(
             delayed(self.download_one_image)(url, folder_name) 
             for url in urls
         )
         return [path for path in image_paths if path is not None]
 
-def create_dataset(state, source, search_queries, filters, min_resolution, save_path, pages):
+def create_dataset(state, source, search_queries, filters, min_resolution, save_path, pages): #, progress = gr.Progress()):
+    print(f"Creating dataset with source: {source}, search queries: {search_queries}, filters: {filters}, min resolution: {min_resolution}, save path: {save_path}, pages: {pages}")
     # Parse the minimum resolution
-    min_h, min_w = tuple(map(int, min_resolution.split('x')))
+    min_resolution = int(min_resolution)
 
     directories = create_directories(save_path)
 
     pages_start, pages_end = parse_pages(pages)
+    print(f"Pages start: {pages_start}, pages end: {pages_end}")
 
     filters = [f for f in FILTERS if f[0] in filters]
 
-    downloader = ImageDownloader(source, directories)
-
-    # Initialize progress tracking
-    progress = gr.Progress()
+    downloader = ImageDownloader(source=source, 
+                                directories=directories,
+                                min_resolution=min_resolution)
+    print(f"Downloader initialized with directories: {directories}")
 
     folder_path = 'csv_files'
     os.makedirs(folder_path, exist_ok=True)
 
-    for query, page in progress.tqdm(prepare_search_queries(search_queries.splitlines(), pages_start, pages_end)):
+    print("Search queries: ", prepare_search_queries(search_queries.splitlines(), pages_start, pages_end))
+
+
+    for query, page in prepare_search_queries(search_queries.splitlines(), pages_start, pages_end): # progress.tqdm(
+        print(f"Downloading images for query: {query}")
         urls = downloader.search_by_query(query, page)
         image_paths = downloader.download_batch(urls, query)
 
@@ -273,16 +281,9 @@ def create_dataset(state, source, search_queries, filters, min_resolution, save_
             destination_dir = directories["accepted"] if image_path in accepted_images else directories["rejected"]
             destination_dir = os.path.join(destination_dir, query)
             shutil.move(image_path, os.path.join(destination_dir, os.path.basename(image_path)))
-    state['status'] = "Dataset generation completed."
-    return state
+    # state['status'] = "Dataset generation completed."
+    # return state
 
-def stop_dataset_generation(state):
-    # Update the state to indicate that the generation process has been stopped
-    state['status'] = "Dataset generation stopped."
-    return state
-
-
-# Gradio interface
 with gr.Blocks() as demo:
     gr.Markdown("# Dataset Creator Tool")
     
@@ -296,27 +297,21 @@ with gr.Blocks() as demo:
     
     with gr.Row():
         filters = gr.CheckboxGroup([x[0] for x in FILTERS], label="Filters")
-        min_resolution = gr.Textbox(label="Minimum Resolution (e.g., 1024x768)", value="1024x1024")
-        pages = gr.Textbox(label="Pages to collect", value="1")
+        min_resolution = gr.Textbox(label="Minimum resolution (shortest side)", value="1024")
+        pages = gr.Textbox(label="Pages to collect e.g. 0-3", value="0-1")
     
     with gr.Row():
         create_button = gr.Button("Create Dataset")
-        stop_button = gr.Button("Stop Generation")
     
-    output = gr.Textbox(label="Output")
+    output = gr.Textbox(label="Output", value="")
     
     create_button.click(
         fn=create_dataset,
         inputs=[state, source, search_queries, filters, min_resolution, save_path, pages],
-        outputs=[state],
-        show_progress=True,
-    )
-    
-    stop_button.click(
-        fn=stop_dataset_generation,
-        inputs=[state],
-        outputs=[state],
+        outputs=[output],
+        # show_progress=True, 
     )
 
+
 if __name__ == "__main__":
-    demo.queue().launch(server_name="0.0.0.0", server_port=7865, share=True, inbrowser=False)
+    demo.queue().launch(server_name="0.0.0.0", server_port=7865, inbrowser=False)
