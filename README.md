@@ -2,6 +2,8 @@
 
 A comprehensive tool for automated image collection, processing, and quality control designed for model training datasets.
 
+![SnapSeeker Logo](https://raw.githubusercontent.com/shigabeev/SnapSeeker/refs/heads/main/logo.webp)
+
 ## Overview
 
 This project combines image processing tools to streamline the collection and curation of training data. It addresses the bottleneck in gathering high-quality images for model training by automating collection, filtering, and quality control processes.
