@@ -26,6 +26,8 @@ from urllib.parse import urlparse
 import os
 import logging
 from contextlib import redirect_stdout
+import hashlib
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
@@ -155,6 +157,76 @@ class ImageDownloader:
         self.session = requests.session()
         self.directories = directories
         self.min_resolution = min_resolution
+        self.seen_hashes = self._load_existing_hashes()
+        
+    def _load_existing_hashes(self):
+        """Load precomputed hashes from all existing dataset folders"""
+        print("Loading existing hashes...")
+        seen_hashes = set()
+        
+        # Find all dataset folders that have accepted/rejected subdirs
+        root_dir = Path('.')
+        dataset_dirs = [d for d in root_dir.iterdir() if d.is_dir() and 
+                       (d / "accepted").exists() and (d / "rejected").exists()]
+        
+        for dataset_dir in dataset_dirs:
+            hash_file = dataset_dir / "image_hashes.json"
+            if hash_file.exists():
+                try:
+                    with open(hash_file) as f:
+                        hashes = json.load(f)
+                        seen_hashes.update(hashes)
+                    logging.info(f"Loaded {len(hashes)} cached hashes from {dataset_dir}")
+                except Exception as e:
+                    logging.error(f"Error loading hashes from {dataset_dir}: {e}")
+            else:
+                # Calculate hashes for existing images
+                hashes = self._calculate_directory_hashes(dataset_dir)
+                try:
+                    with open(hash_file, 'w') as f:
+                        json.dump(list(hashes), f)
+                    seen_hashes.update(hashes)
+                    logging.info(f"Calculated and cached {len(hashes)} hashes for {dataset_dir}")
+                except Exception as e:
+                    logging.error(f"Error saving hashes for {dataset_dir}: {e}")
+                    
+        return seen_hashes
+
+    def _calculate_directory_hashes(self, directory):
+        """Calculate MD5 hashes for all images in accepted and rejected folders"""
+        hashes = set()
+        for subdir in ["accepted", "rejected"]:
+            dir_path = directory / subdir
+            if not dir_path.exists():
+                continue
+                
+            for img_path in dir_path.rglob("*"):
+                if not img_path.is_file():
+                    continue
+                try:
+                    with open(img_path, 'rb') as f:
+                        content_hash = hashlib.md5(f.read()).hexdigest()
+                        hashes.add(content_hash)
+                except Exception as e:
+                    logging.error(f"Error calculating hash for {img_path}: {e}")
+        
+        return hashes
+
+    def _save_new_hash(self, content_hash, save_path):
+        """Save new hash to the dataset's hash file"""
+        hash_file = Path(save_path).parent / "image_hashes.json"
+        try:
+            existing_hashes = []
+            if hash_file.exists():
+                with open(hash_file) as f:
+                    existing_hashes = json.load(f)
+            
+            existing_hashes.append(content_hash)
+            
+            with open(hash_file, 'w') as f:
+                json.dump(existing_hashes, f)
+        except Exception as e:
+            logging.error(f"Error saving hash to {hash_file}: {e}")
 
     def search_by_query(self, search_query, page):
         if self.source == "pexels":
@@ -205,10 +277,27 @@ class ImageDownloader:
             return None
         if response.status_code != 200:
             return None
+
+        # Calculate MD5 of image content before saving
+        content_hash = hashlib.md5(response.content).hexdigest()
+        
+        # Check if we've seen this hash before
+        if content_hash in self.seen_hashes:
+            logging.info(f"Duplicate image found for {url}, skipping...")
+            return None
+        
+        # Save new hash
+        self.seen_hashes.add(content_hash)
+        
+        # Save the unique image
         image_path = self._get_image_path(url, query)
         with open(image_path, 'wb') as img_file:
             img_file.write(response.content)
-        # image is downloaded, perform some basic checks now
+            
+        # Save the hash to the dataset's hash file
+        self._save_new_hash(content_hash, image_path)
+
+        # Perform remaining checks
         try:
             img = Image.open(image_path)
             img.verify()
@@ -222,13 +311,13 @@ class ImageDownloader:
             new_fp = self._get_rejected_path(image_path)
             shutil.move(image_path, new_fp)
             return None
-        # Let's recover extension
+
+        # Update extension based on actual format
         img_format = img.format.lower()
         path, ext = os.path.splitext(image_path)
         new_fp = f"{path}.{img_format}"
         shutil.move(image_path, new_fp)
-        image_path = new_fp
-        return image_path
+        return new_fp
 
     def download_batch(self, urls, folder_name):
         os.makedirs(os.path.join(self.directories["unprocessed"], folder_name), exist_ok=True)
@@ -238,7 +327,7 @@ class ImageDownloader:
         )
         return [path for path in image_paths if path is not None]
 
-def create_dataset(state, source, search_queries, filters, min_resolution, save_path, pages): #, progress = gr.Progress()):
+def create_dataset(state, source, search_queries, filters, min_resolution, save_path, pages, progress = gr.Progress()):
     print(f"Creating dataset with source: {source}, search queries: {search_queries}, filters: {filters}, min resolution: {min_resolution}, save path: {save_path}, pages: {pages}")
     # Parse the minimum resolution
     min_resolution = int(min_resolution)
@@ -283,6 +372,7 @@ def create_dataset(state, source, search_queries, filters, min_resolution, save_
             shutil.move(image_path, os.path.join(destination_dir, os.path.basename(image_path)))
     # state['status'] = "Dataset generation completed."
     # return state
+
 
 with gr.Blocks() as demo:
     gr.Markdown("# Dataset Creator Tool")

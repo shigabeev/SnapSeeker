@@ -32,6 +32,10 @@ class ImageSorter:
         
         # Add method to get all subfolders
         self.available_subfolders = self._get_all_subfolders()
+        
+        # Add gallery state
+        self.current_gallery_folder = None
+        self.gallery_images = []
     
     def _refresh_pending_images(self) -> None:
         """Refresh the list of pending images to be processed."""
@@ -138,6 +142,23 @@ class ImageSorter:
             next_image, metadata = self.get_next_image()
             return next_image or "end.jpg", f"Error processing image: {str(e)}", None, None, None
 
+    def load_gallery(self, subfolder: str) -> list[Tuple[str, dict]]:
+        """Load all images from a specific subfolder in accepted directory."""
+        if not subfolder:
+            return []
+            
+        folder_path = self.accepted_dir / subfolder
+        images = []
+        
+        if folder_path.exists():
+            for file in folder_path.glob("*.*"):
+                if file.suffix.lower() in self.image_extensions:
+                    images.append((str(file), self.get_metadata(file)))
+                    
+        self.current_gallery_folder = subfolder
+        self.gallery_images = images
+        return images
+
 def create_ui(source_dir: str) -> gr.Interface:
     sorter = ImageSorter(source_dir)
     first_image, metadata = sorter.get_next_image()
@@ -158,6 +179,11 @@ def create_ui(source_dir: str) -> gr.Interface:
                     arcname = file_path.relative_to(folder_path)
                     zipf.write(file_path, arcname)
         return zip_path
+    
+    def load_gallery_images(folder: str) -> list[str]:
+        """Load images from selected folder for gallery view"""
+        images = sorter.load_gallery(folder)
+        return [img[0] for img in images]
     
     with gr.Blocks() as demo:
         with gr.Row():
@@ -192,6 +218,21 @@ def create_ui(source_dir: str) -> gr.Interface:
                         variant="secondary",
                         value=lambda: create_zip_archive(sorter.reviewed_dir)
                     )
+                
+                # Add gallery components
+                gr.Markdown("### Gallery")
+                gallery_folder = gr.Dropdown(
+                    choices=[""] + sorter.available_subfolders,
+                    label="View Folder",
+                    value=""
+                )
+                gallery = gr.Gallery(label="Folder Contents")
+                
+                gallery_folder.change(
+                    fn=load_gallery_images,
+                    inputs=[gallery_folder],
+                    outputs=[gallery]
+                )
         
         # Update event handlers to include subfolder
         reject_btn.click(
@@ -209,6 +250,6 @@ def create_ui(source_dir: str) -> gr.Interface:
 
 if __name__ == "__main__":
     # Replace with your source directory
-    SOURCE_DIR = "hairstyles_4/"
+    SOURCE_DIR = "hairstyles_5/"
     demo = create_ui(SOURCE_DIR)
     demo.launch(server_name="0.0.0.0", server_port=7866)
