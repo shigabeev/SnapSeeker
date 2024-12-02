@@ -120,8 +120,23 @@ def create_directories(save_path):
         os.makedirs(directory, exist_ok=True)
     return directories
 
-def apply_filters(csv_path, filters):
-    config = FilesDatasetConfig.from_path_and_columns(csv_path, image_path_col='image_path')
+def apply_filters(csv_file_path, filters):
+    """Apply a sequence of filters to the dataset.
+
+    Parameters
+    ----------
+    csv_file_path : str
+        Path to the CSV file containing image paths to filter
+    filters : list of tuple
+        List of (filter_name, filter_function) tuples to apply sequentially
+
+    Returns
+    -------
+    pandas.DataFrame
+        Filtered dataframe containing only rows that passed all filters.
+        Returns empty dataframe if any filter results in no matches.
+    """
+    config = FilesDatasetConfig.from_path_and_columns(csv_file_path, image_path_col='image_path')
     reader = DatasetReader()
     processor = reader.read_from_config(config)
     print(f"Applying filters: {filters}. Images count: {processor.df.shape[0]}")
@@ -153,6 +168,20 @@ def apply_filters(csv_path, filters):
     return df_selection
 
 class ImageDownloader:
+    """Downloads and processes images from various sources with duplicate detection.
+    
+    Handles downloading images from different sources (e.g. Pexels, Google), checks for 
+    duplicates using MD5 hashes, and validates image quality requirements.
+
+    Parameters
+    ----------
+    source : str
+        Source to download images from ('pexels' or 'Google search')
+    directories : dict
+        Dictionary containing paths for 'unprocessed', 'accepted' and 'rejected' directories
+    min_resolution : int, optional
+        Minimum required resolution (width/height) for images, by default 1024
+    """
 
     def __init__(self, source, directories, min_resolution=1024):
         self.source = source
@@ -237,6 +266,25 @@ class ImageDownloader:
             logging.error(f"Error saving hash to {hash_file}: {e}")
 
     def search_by_query(self, search_query, page):
+        """Search for images matching the query on the specified page.
+
+        Parameters
+        ----------
+        search_query : str
+            Search term to look for images
+        page : int
+            Page number for paginated results
+
+        Returns
+        -------
+        list
+            List of image URLs matching the search query
+        
+        Raises
+        ------
+        ValueError
+            If source type is not supported
+        """
         if self.source == "pexels":
             pexels_api.search(search_query, page=page, results_per_page=80)
             photos = pexels_api.get_entries()
@@ -278,6 +326,20 @@ class ImageDownloader:
         return os.path.join(self.directories["rejected"], basename)
     
     def download_one_image(self, url, query):
+        """Download and validate a single image.
+
+        Parameters
+        ----------
+        url : str
+            URL of the image to download
+        query : str
+            Search query associated with this image for organizing into folders
+
+        Returns
+        -------
+        str or None
+            Path to the downloaded image if successful, None if download/validation fails
+        """
         try:
             response = self.session.get(url, timeout=(2, 20))
         except Exception as e:
@@ -328,6 +390,20 @@ class ImageDownloader:
         return new_fp
 
     def download_batch(self, urls, folder_name):
+        """Download multiple images in parallel.
+
+        Parameters
+        ----------
+        urls : list
+            List of image URLs to download
+        folder_name : str
+            Name of folder to organize downloaded images
+
+        Returns
+        -------
+        list
+            List of successful download paths, excluding any failed downloads
+        """
         os.makedirs(os.path.join(self.directories["unprocessed"], folder_name), exist_ok=True)
         image_paths = Parallel(n_jobs=1)(
             delayed(self.download_one_image)(url, folder_name) 
@@ -336,6 +412,32 @@ class ImageDownloader:
         return [path for path in image_paths if path is not None]
 
 def create_dataset(state, source, search_queries, filters, min_resolution, save_path, pages, progress = gr.Progress()):
+    """Create a filtered image dataset from search results.
+
+    Parameters
+    ----------
+    state : dict
+        Gradio state object
+    source : str
+        Source to download images from ('pexels' or 'Google search')
+    search_queries : str
+        Newline-separated list of search queries
+    filters : list
+        List of filter names to apply
+    min_resolution : str
+        Minimum image resolution as string (will be converted to int)
+    save_path : str
+        Path where to save the dataset
+    pages : str
+        Page range as string (e.g. "0-5" or "3")
+    progress : gr.Progress, optional
+        Gradio progress bar object
+
+    Returns
+    -------
+    dict
+        Updated state dictionary
+    """
     print(f"Creating dataset with source: {source}, search queries: {search_queries}, filters: {filters}, min resolution: {min_resolution}, save path: {save_path}, pages: {pages}")
     # Parse the minimum resolution
     min_resolution = int(min_resolution)
@@ -385,6 +487,13 @@ def create_dataset(state, source, search_queries, filters, min_resolution, save_
     # return state
 
 def create_collect_ui():
+    """Create the Gradio UI for dataset collection.
+
+    Returns
+    -------
+    list
+        List of Gradio components making up the UI
+    """
     with gr.Row():
         source = gr.Dropdown(["Google search", "Pexels"], label="Source", value="Google search")
         auto_save_path = f"dataset_{int(time.time())}"

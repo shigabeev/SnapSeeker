@@ -8,6 +8,21 @@ from typing import Optional, Tuple
 import gradio as gr
 
 class GalleryDownloader:
+    """
+    A class to manage image files across accepted and rejected directories.
+    Provides functionality for organizing, reviewing and downloading images.
+    
+    :param source_dir: str, path to the root directory containing images organized as:
+        source_dir/
+        ├── accepted/
+        │   ├── query1/
+        │   │   ├── img1.jpg
+        │   │   └── img2.jpg
+        │   └── query2/
+        │       └── img3.jpg
+        ├── rejected/     # follows the same structure as accepted
+        └── reviewed/     # follows the same structure as accepted
+    """
     def __init__(self, source_dir: str):
         self.source_dir = Path(source_dir)
         self.accepted_dir = self.source_dir / "accepted"
@@ -39,7 +54,11 @@ class GalleryDownloader:
         self.gallery_images = []
     
     def _refresh_pending_images(self) -> None:
-        """Refresh the list of pending images to be processed."""
+        """
+        Refresh the list of pending images that need to be processed.
+        Finds all image files in accepted directory that haven't been reviewed yet.
+        Randomizes the order of pending images.
+        """
         self.pending_images = [
             file for file in self.accepted_dir.rglob("*")
             if file.suffix.lower() in self.image_extensions
@@ -48,25 +67,56 @@ class GalleryDownloader:
         random.shuffle(self.pending_images)
     
     def _get_all_subfolders(self) -> list[str]:
-        """Get all unique subfolder paths relative to accepted_dir."""
+        """Get all unique subfolder paths relative to accepted_dir.
+
+        Recursively finds all queries in the source dir that contain image files.
+        Returns
+        -------
+        list[str]
+            Sorted list of query paths. 
+            For example: ['cats', 'dogs', 'nature']
+        """
         subfolders = set()
-        for file in self.accepted_dir.rglob("*"):
-            if file.is_file() and file.suffix.lower() in self.image_extensions:
-                if self.reviewed_dir not in file.parents:
-                    rel_path = str(file.parent.relative_to(self.accepted_dir))
-                    if rel_path != '.':  # Skip root folder
-                        subfolders.add(rel_path)
+        
+        # Get query folders from accepted dir
+        for folder in self.accepted_dir.iterdir():
+            if folder.is_dir():
+                subfolders.add(folder.name)
+                
+        # Get query folders from rejected dir
+        for folder in self.rejected_dir.iterdir():
+            if folder.is_dir():
+                subfolders.add(folder.name)
+                
+        # Get query folders from reviewed dir
+        for folder in self.reviewed_dir.iterdir():
+            if folder.is_dir():
+                subfolders.add(folder.name)
+                
         return sorted(list(subfolders))
     
     def get_metadata(self, file: Path) -> dict:
-            from PIL import Image
-            with Image.open(file) as img:
-                width, height = img.size
-                return {
-                    'subfolder': str(file.parent.relative_to(self.accepted_dir)),
-                    'resolution': f"{width}x{height}",
-                    'format': file.suffix.lower()[1:],
-                }
+        """
+        Extract metadata from an image file.
+        
+        :param file: Path object pointing to an image file
+        :return: Dictionary containing:
+            - subfolder: Relative path from accepted dir
+            - resolution: Image dimensions as "WxH" string 
+            - format: Image format (jpg, png etc)
+            
+        >>> sorter = GalleryDownloader("test_dir") 
+        >>> sorter.get_metadata(Path("test_dir/accepted/kitten/img.jpg"))
+        {'subfolder': 'kitten', 'resolution': '800x600', 'format': 'jpg'}
+        """
+        from PIL import Image
+        with Image.open(file) as img:
+            width, height = img.size
+            return {
+                'subfolder': str(file.parent.relative_to(self.accepted_dir)),
+                'resolution': f"{width}x{height}",
+                'format': file.suffix.lower()[1:],
+            }
     
     
     def _format_status(self, decision: Optional[bool], remaining_count: int) -> str:
@@ -81,7 +131,18 @@ class GalleryDownloader:
 
 
     def load_gallery(self, subfolder: str) -> list[Tuple[str, dict]]:
-        """Load all images from a specific subfolder in accepted directory."""
+        """
+        Load all images from a specific subfolder in the accepted directory.
+        
+        :param subfolder: Relative path to folder within accepted directory
+        :return: List of tuples containing:
+            - Image file path as string
+            - Image metadata dictionary
+            
+        >>> sorter = GalleryDownloader("test_dir")
+        >>> sorter.load_gallery("folder1")
+        [('test_dir/accepted/folder1/img1.jpg', {...})]
+        """
         if not subfolder:
             return []
             
@@ -98,7 +159,15 @@ class GalleryDownloader:
         return images
 
 def get_valid_source_dirs() -> list[str]:
-    """Find all folders in 'collected_datasets' that have 'accepted' and 'rejected' subfolders."""
+    """
+    Find all folders in 'collected_datasets' that have required structure.
+    A valid directory must contain both 'accepted' and 'rejected' subfolders.
+    
+    :return: Sorted list of valid directory paths as strings
+    
+    >>> get_valid_source_dirs()
+    ['collected_datasets/dataset1', 'collected_datasets/dataset2']
+    """
     base_dir = Path('collected_datasets')
     valid_dirs = []
     
@@ -112,6 +181,15 @@ def get_valid_source_dirs() -> list[str]:
     return sorted(valid_dirs)
 
 def create_download_ui() -> gr.Blocks:
+    """
+    Create a Gradio interface for viewing and downloading images.
+    
+    :return: Gradio Blocks interface with:
+        - Directory selector dropdown
+        - Gallery folder selector
+        - Image gallery view
+        - Download buttons for accepted/reviewed images
+    """
     valid_dirs = get_valid_source_dirs()
     default_dir = valid_dirs[0] if valid_dirs else "No valid directories found"
     sorter = GalleryDownloader(default_dir)
