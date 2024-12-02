@@ -5,8 +5,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from urllib.parse import urlparse
 
-import aiofiles
-import aiohttp
+import json
+import requests
+import hashlib
+import logging
 import boto3
 import gradio as gr
 import pandas as pd
@@ -15,9 +17,13 @@ from dotenv import load_dotenv
 from joblib import Parallel, delayed
 from pexels_api import API
 
+from DPF import ShardsDatasetConfig, DatasetReader, FilesDatasetConfig
+from DPF.pipelines import FilterPipeline
 from DPF.filters.images.face_focus_filter import FaceFocusFilter
 from DPF.filters.images.grayscale_filter import GrayscaleFilter
 from DPF.filters.images.noise_estimation_filter import NoiseEstimationFilter
+from DPF.filters.images.text_detection_filter import CRAFTFilter
+from DPF.filters.images.watermarks_filter import WatermarksFilter
 
 
 # Load environment variables
@@ -45,8 +51,18 @@ FILTERS = [
     ("noise_filter", NoiseEstimationFilter(model_path='/home/ubuntu/filter images/noise_estimator_model.joblib',
                                     params_path='/home/ubuntu/filter images/feature_params.joblib',
                                     workers=1,
-                                    batch_size=1))
+                                    batch_size=1)),
+    ("text_detection", CRAFTFilter()),
+    ("watermark_filter", WatermarksFilter("resnext101_32x8d-large", weights_folder="/tmp/datasets_utils", batch_size=16)),
 ]
+
+# Configure basic logging
+logging.basicConfig(
+    filename='app.log',
+    filemode='w',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG
+)
 
 def create_csv_filename(folder_path, base_name='images.csv'):
     counter = 1
@@ -108,12 +124,14 @@ def apply_filters(csv_path, filters):
     config = FilesDatasetConfig.from_path_and_columns(csv_path, image_path_col='image_path')
     reader = DatasetReader()
     processor = reader.read_from_config(config)
+    print(f"Applying filters: {filters}. Images count: {processor.df.shape[0]}")
 
     # Check if initial dataframe is empty
     if processor.df.empty:
         return pd.DataFrame()  # Return empty dataframe if input is empty
-
+    print(f"Applying filters: {filters}. Images count: {processor.df.shape[0]}")
     for filter_name, filter_obj in filters:
+        print(f"Applying filter: {filter_name}")
         processor.apply_data_filter(filter_obj)
         filtered_csv = f'filtered_{filter_name}.csv'
         processor.df.to_csv(filtered_csv, index=False)
@@ -130,7 +148,9 @@ def apply_filters(csv_path, filters):
     df = processor.df
     df.columns = df.columns.str.replace('_x', '').str.replace('_y', '')
     df = df.loc[:, ~df.columns.duplicated()]
-    return processor.df[processor.df.apply(lambda row: all(row[f'{filter_name}_pass'] for filter_name, _ in filters), axis=1)]
+    df_selection = processor.df[processor.df.apply(lambda row: all(row[f'{filter_name}_pass'] for filter_name, _ in filters), axis=1)]
+    print(f"Filtered images. {processor.df.shape[0]} -> {df_selection.shape[0]}")
+    return df_selection
 
 class ImageDownloader:
 
@@ -200,8 +220,14 @@ class ImageDownloader:
         try:
             existing_hashes = []
             if hash_file.exists():
-                with open(hash_file) as f:
-                    existing_hashes = json.load(f)
+                try:
+                    with open(hash_file) as f:
+                        existing_hashes = json.load(f)
+                except json.JSONDecodeError:
+                    # Handle corrupted JSON file by starting fresh
+                    logging.warning(f"Corrupted hash file found at {hash_file}, creating new one")
+                    os.remove(hash_file)
+                    existing_hashes = []
             
             existing_hashes.append(content_hash)
             
@@ -315,6 +341,7 @@ def create_dataset(state, source, search_queries, filters, min_resolution, save_
     min_resolution = int(min_resolution)
     os.makedirs('collected_datasets', exist_ok=True)
     save_path = os.path.join('collected_datasets', save_path)
+    os.makedirs(save_path, exist_ok=True)
     # Create directories
     directories = create_directories(save_path)
 
